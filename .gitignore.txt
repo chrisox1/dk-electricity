@@ -1,0 +1,13 @@
+# Ignore database
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.env
+
+# Raw data folder
+data/
