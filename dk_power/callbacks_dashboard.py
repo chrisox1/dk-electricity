@@ -5,6 +5,9 @@ self-sufficiency, and KPI cards.
 
 from __future__ import annotations
 
+import hashlib
+import threading
+import time
 from datetime import datetime, timezone
 
 import dash_bootstrap_components as dbc
@@ -16,6 +19,15 @@ from .loaders import apply_smoothing, downsample, load_prices, load_production
 from .theme import BASE, C, kpi_card, no_data, rgba
 import pandas as pd
 
+# ── Figure cache ─────────────────────────────────────────────────────────────
+_fig_cache: dict[str, tuple[float, tuple]] = {}
+_fig_lock = threading.Lock()
+_FIG_TTL = 45  # seconds; covers most tick intervals
+
+
+def _fig_cache_key(days, area_sel, ccy, smooth):
+    return f"{days}:{area_sel}:{ccy}:{smooth}"
+
 
 def register_dashboard_callbacks(app) -> None:
     """Attach all dashboard-tab callbacks to *app*."""
@@ -24,16 +36,19 @@ def register_dashboard_callbacks(app) -> None:
         Output("dashboard-page", "style"),
         Output("analytics-page", "style"),
         Output("macro-page", "style"),
+        Output("diagnostics-page", "style"),
         Input("tabs", "active_tab"),
     )
     def switch_tab(active_tab):
         hide = {"display": "none"}
         show = {"display": "block"}
         if active_tab == "tab-analytics":
-            return hide, show, hide
+            return hide, show, hide, hide
         elif active_tab == "tab-macro":
-            return hide, hide, show
-        return show, hide, hide
+            return hide, hide, show, hide
+        elif active_tab == "tab-diagnostics":
+            return hide, hide, hide, show
+        return show, hide, hide, hide
 
     @app.callback(
         Output("price-chart", "figure"),
@@ -59,6 +74,15 @@ def register_dashboard_callbacks(app) -> None:
             days = 7.0
         area_sel = area_sel or "both"
         ccy = ccy or "eur"
+
+        # Check figure cache (skip expensive chart rebuild if params unchanged)
+        cache_key = _fig_cache_key(days, area_sel, ccy, smooth)
+        with _fig_lock:
+            cached = _fig_cache.get(cache_key)
+            if cached and (time.monotonic() - cached[0]) < _FIG_TTL:
+                # Return cached figures with updated timestamp
+                return cached[1][:-1] + (now_str,)
+
         areas = ["DK1", "DK2"] if area_sel == "both" else [area_sel]
         pcol = "price_eur" if ccy == "eur" else "price_dkk"
         clabel = "EUR/MWh" if ccy == "eur" else "DKK/kWh"
@@ -94,7 +118,10 @@ def register_dashboard_callbacks(app) -> None:
         kpis = _build_kpis(p_stats, price_scale, clabel, qdf, areas)
         stats = _build_price_stats_row(p_stats, price_scale, clabel)
 
-        return fig_p, fig_q, fig_e, fig_mix, fig_gap, fig_green, kpis, stats, now_str
+        result = (fig_p, fig_q, fig_e, fig_mix, fig_gap, fig_green, kpis, stats, now_str)
+        with _fig_lock:
+            _fig_cache[cache_key] = (time.monotonic(), result)
+        return result
 
 
 # ── Chart builders (pure functions) ──────────────────────────────────────────

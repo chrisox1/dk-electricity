@@ -166,24 +166,34 @@ def _prepare_merged_data(pdf, qdf, area, freq, days):
     else:
         merged["temp_avg_c"] = 10.0
 
-    # ── Neighbour electricity prices (DE-LU, NO2, SE3/SE4) ──────────────
-    _nb_map = {"DE-LU": "de_price_eur", "NO2": "no_price_eur",
-               "SE3": "se_price_eur", "SE4": "se_price_eur"}
-    for nb_area, col_name in _nb_map.items():
+    # ── Neighbour electricity prices (DE-LU/DE, NO2, SE3/SE4) ────────────
+    _nb_map = [
+        (["DE-LU", "DE"], "de_price_eur"),
+        (["NO2"], "no_price_eur"),
+        (["SE3", "SE4"], "se_price_eur"),
+    ]
+    for nb_areas, col_name in _nb_map:
         if col_name in merged.columns:
-            continue  # SE3/SE4 share a column; only process once
-        nb_pdf = pdf[pdf["price_area"] == nb_area].copy()
-        if nb_pdf.empty:
-            merged[col_name] = float("nan")
             continue
-        nb_num = nb_pdf.select_dtypes(include="number").columns.tolist()
-        if freq == "daily":
-            nb_pdf = nb_pdf.set_index("ts_utc")[nb_num].resample("1D").mean().reset_index()
+        parts = []
+        for nb_area in nb_areas:
+            nb_pdf = pdf[pdf["price_area"] == nb_area].copy()
+            if nb_pdf.empty:
+                continue
+            nb_num = nb_pdf.select_dtypes(include="number").columns.tolist()
+            if freq == "daily":
+                nb_pdf = nb_pdf.set_index("ts_utc")[nb_num].resample("1D").mean().reset_index()
+            else:
+                nb_pdf = nb_pdf.set_index("ts_utc")[nb_num].resample("1h").mean().reset_index()
+            nb_pdf["ts_utc"] = pd.to_datetime(nb_pdf["ts_utc"]).dt.tz_localize(None)
+            nb_pdf = nb_pdf[["ts_utc", "price_eur"]].rename(columns={"price_eur": col_name})
+            parts.append(nb_pdf)
+        if parts:
+            # Merge all parts, averaging overlaps
+            combined = pd.concat(parts).groupby("ts_utc").mean().reset_index()
+            merged = pd.merge(merged, combined, on="ts_utc", how="left")
         else:
-            nb_pdf = nb_pdf.set_index("ts_utc")[nb_num].resample("1h").mean().reset_index()
-        nb_pdf["ts_utc"] = pd.to_datetime(nb_pdf["ts_utc"]).dt.tz_localize(None)
-        nb_pdf = nb_pdf[["ts_utc", "price_eur"]].rename(columns={"price_eur": col_name})
-        merged = pd.merge(merged, nb_pdf, on="ts_utc", how="left")
+            merged[col_name] = float("nan")
     # Forward-fill and fill remaining NaN with means
     for col_name in ["de_price_eur", "no_price_eur", "se_price_eur"]:
         if col_name in merged.columns:

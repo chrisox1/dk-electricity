@@ -13,7 +13,7 @@ GAS_CSV_PATH: Path = Path("Dutch_TTF_Natural_Gas_Futures_Historical_Data.csv")
 
 # ── Price areas ──────────────────────────────────────────────────────────────
 DK_AREAS: list = ["DK1", "DK2"]
-NEIGHBOUR_AREAS: list = ["NO2", "SE3", "SE4", "DE-LU"]
+NEIGHBOUR_AREAS: list = ["NO2", "SE3", "SE4", "DE-LU", "DE"]
 ALL_PRICE_AREAS: list = DK_AREAS + NEIGHBOUR_AREAS
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ HISTORY_YEARS: int = 26  # Elspotprices goes back to ~2000
 REFRESH_SECONDS: int = 300
 
 # ── Charting ─────────────────────────────────────────────────────────────────
-MAX_CHART_PTS: int = 1500  # downsample beyond this per series
+MAX_CHART_PTS: int = 800  # downsample beyond this per series
 
 # ── Elspotprices → DayAheadPrices transition ─────────────────────────────────
 ELSPOT_CUTOFF: str = "2025-10-01T00:00:00"

@@ -86,6 +86,12 @@ def build_layout() -> dbc.Container:
                         label_style={"color": C["muted"]},
                         active_label_style={"color": C["text"]},
                     ),
+                    dbc.Tab(
+                        label="OLS Diagnostics",
+                        tab_id="tab-diagnostics",
+                        label_style={"color": C["muted"]},
+                        active_label_style={"color": C["text"]},
+                    ),
                 ],
                 id="tabs",
                 active_tab="tab-dashboard",
@@ -484,6 +490,144 @@ def build_layout() -> dbc.Container:
                             "Data: Statistics Denmark (StatBank API)  ·  ",
                             "Significance: *** p<0.001, ** p<0.01, * p<0.05, † p<0.10  ·  ",
                             "Monthly CPI & IndPro, Quarterly GDP (forward-filled to monthly)",
+                        ],
+                        className="text-muted",
+                        style={"fontSize": "10px", "marginTop": "15px", "textAlign": "center"},
+                    ),
+                ],
+                style={"display": "none"},
+            ),
+            # ═════════════════════════════════════════════════════════════════
+            # OLS DIAGNOSTICS PAGE
+            # ═════════════════════════════════════════════════════════════════
+            html.Div(
+                id="diagnostics-page",
+                children=[
+                    html.Hr(style={"borderColor": C["border"], "margin": "40px 0 30px 0"}),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                html.H3(
+                                    "🔬 OLS Regression Diagnostics",
+                                    style={"fontSize": "1.2rem", "color": C["text"], "fontWeight": 600},
+                                ),
+                                width=8,
+                            ),
+                            dbc.Col(
+                                dbc.Button("Run Diagnostics", id="diag-refresh", color="secondary", size="sm",
+                                           style={"float": "right"}),
+                                width=4,
+                            ),
+                        ],
+                        className="mb-2",
+                    ),
+                    html.P(
+                        "Checking the 6 classical OLS assumptions: linearity, independence, "
+                        "homoscedasticity, normality, multicollinearity, and influential observations.",
+                        style={"color": C["muted"], "fontSize": "0.72rem"},
+                    ),
+                    # Controls
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label("Analysis window", style=LABEL_STYLE),
+                                    dbc.Select(
+                                        id="diag-window", value="90",
+                                        style={**DD_STYLE, "cursor": "pointer"},
+                                        options=[
+                                            {"label": "30 days", "value": "30"},
+                                            {"label": "90 days", "value": "90"},
+                                            {"label": "1 year", "value": "365"},
+                                            {"label": "5 years", "value": "1825"},
+                                            {"label": "All data", "value": "9999"},
+                                        ],
+                                    ),
+                                ],
+                                md=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Price area", style=LABEL_STYLE),
+                                    dbc.Select(
+                                        id="diag-area", value="DK1",
+                                        style={**DD_STYLE, "cursor": "pointer"},
+                                        options=[
+                                            {"label": "DK1 West", "value": "DK1"},
+                                            {"label": "DK2 East", "value": "DK2"},
+                                        ],
+                                    ),
+                                ],
+                                md=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Data frequency", style=LABEL_STYLE),
+                                    dbc.Select(
+                                        id="diag-freq", value="daily",
+                                        style={**DD_STYLE, "cursor": "pointer"},
+                                        options=[
+                                            {"label": "Hourly", "value": "hourly"},
+                                            {"label": "Daily", "value": "daily"},
+                                        ],
+                                    ),
+                                ],
+                                md=3,
+                            ),
+                        ],
+                        className="mb-3 g-2",
+                    ),
+                    # Row 1: Linearity + Homoscedasticity
+                    html.H5("1. Linearity  &  3. Homoscedasticity",
+                            style={"color": C["muted"], "fontSize": "0.85rem", "marginTop": "10px"}),
+                    dbc.Row(
+                        [
+                            dbc.Col(dcc.Graph(id="diag-resid-fitted", config={"scrollZoom": True}), md=6),
+                            dbc.Col(dcc.Graph(id="diag-scale-loc", config={"scrollZoom": True}), md=6),
+                        ],
+                        className="mb-3",
+                    ),
+                    # Row 2: Normality
+                    html.H5("4. Normality of Errors",
+                            style={"color": C["muted"], "fontSize": "0.85rem"}),
+                    dbc.Row(
+                        [
+                            dbc.Col(dcc.Graph(id="diag-qq", config={"scrollZoom": True}), md=6),
+                            dbc.Col(dcc.Graph(id="diag-resid-hist", config={"scrollZoom": True}), md=6),
+                        ],
+                        className="mb-3",
+                    ),
+                    # Row 3: Influential + Multicollinearity
+                    html.H5("5. Multicollinearity  &  6. Influential Observations",
+                            style={"color": C["muted"], "fontSize": "0.85rem"}),
+                    dbc.Row(
+                        [
+                            dbc.Col(dcc.Graph(id="diag-corr-heatmap", config={"scrollZoom": True}), md=4),
+                            dbc.Col(dcc.Graph(id="diag-cooks", config={"scrollZoom": True}), md=4),
+                            dbc.Col(dcc.Graph(id="diag-leverage", config={"scrollZoom": True}), md=4),
+                        ],
+                        className="mb-3",
+                    ),
+                    # Row 4: Partial regressions (linearity deep dive)
+                    html.H5("1. Linearity — Partial Regression (Added-Variable) Plots",
+                            style={"color": C["muted"], "fontSize": "0.85rem"}),
+                    dbc.Row(
+                        [
+                            dbc.Col(dcc.Graph(id="diag-partial-wind", config={"scrollZoom": True}), md=4),
+                            dbc.Col(dcc.Graph(id="diag-partial-solar", config={"scrollZoom": True}), md=4),
+                            dbc.Col(dcc.Graph(id="diag-partial-gas", config={"scrollZoom": True}), md=4),
+                        ],
+                        className="mb-3",
+                    ),
+                    # Test statistic summary
+                    html.H5("2. Independence  &  Test Statistics Summary",
+                            style={"color": C["muted"], "fontSize": "0.85rem"}),
+                    dbc.Row(id="diag-summary", className="mb-3 g-2"),
+                    html.P(
+                        [
+                            "Green = assumption satisfied (p>0.05)  ·  Red = assumption violated (p<0.05)  ·  ",
+                            "DW ≈ 2 = no autocorrelation  ·  VIF < 5 = low multicollinearity  ·  ",
+                            "Cook's D > 4/n = influential observation",
                         ],
                         className="text-muted",
                         style={"fontSize": "10px", "marginTop": "15px", "textAlign": "center"},

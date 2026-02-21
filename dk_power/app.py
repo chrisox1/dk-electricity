@@ -7,6 +7,7 @@ import dash_bootstrap_components as dbc
 
 from .callbacks_analytics import register_analytics_callbacks
 from .callbacks_dashboard import register_dashboard_callbacks
+from .callbacks_diagnostics import register_diagnostics_callbacks
 from .callbacks_macro import register_macro_callbacks
 from .layout import build_layout
 
@@ -22,4 +23,5 @@ def create_app() -> dash.Dash:
     register_dashboard_callbacks(app)
     register_analytics_callbacks(app)
     register_macro_callbacks(app)
+    register_diagnostics_callbacks(app)
     return app
