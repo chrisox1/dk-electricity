@@ -61,15 +61,31 @@ def _prepare_data(pdf, qdf, area, freq, days):
     if len(features) < 2:
         return None
 
-    X = merged[features].values
-    y = merged["price_dkk_kwh"].values
+    # Standardize continuous features (z-scores) — same as analytics regression
+    from .callbacks_analytics import DOW_COLS
+    BINARY_FEATS = set(DOW_COLS) | {"is_peak", "is_weekend"}
+    X_raw = merged[features].values.copy()
+    for i, f in enumerate(features):
+        if f not in BINARY_FEATS:
+            m, s = X_raw[:, i].mean(), X_raw[:, i].std()
+            if s > 0:
+                X_raw[:, i] = (X_raw[:, i] - m) / s
+
+    X = X_raw
+    y = merged["log_price"].values  # asinh-transformed price
 
     ols = None
     if HAS_SM:
         try:
-            ols = sm.OLS(y, sm.add_constant(X)).fit()
+            X_const = sm.add_constant(X)
+            maxlags = max(1, int(len(y) ** (1 / 3)))
+            # Fit both: plain OLS for diagnostics, HAC for inference
+            ols = sm.OLS(y, X_const).fit()
+            ols_hac = sm.OLS(y, X_const).fit(cov_type="HAC", cov_kwds={"maxlags": maxlags})
         except Exception:
-            pass
+            ols_hac = None
+    else:
+        ols_hac = None
 
     sklearn_model = LinearRegression().fit(X, y)
     y_pred = sklearn_model.predict(X)
@@ -78,7 +94,7 @@ def _prepare_data(pdf, qdf, area, freq, days):
     return {
         "df": merged, "features": features, "X": X, "y": y,
         "y_pred": y_pred, "residuals": residuals,
-        "model": sklearn_model, "ols": ols,
+        "model": sklearn_model, "ols": ols, "ols_hac": ols_hac,
     }
 
 
@@ -167,8 +183,8 @@ def _resid_vs_fitted(y_pred, resid, area):
         pass
     fig.add_hline(y=0, line_dash="dot", line_color=C["muted"], line_width=1)
     fig.update_layout(
-        **BASE, title=f"{area} Residuals vs Fitted (Linearity Check)",
-        height=320, xaxis_title="Fitted Values (DKK/kWh)", yaxis_title="Residuals",
+        **BASE, title=f"{area} ARX Residuals vs Fitted (Linearity Check)",
+        height=320, xaxis_title="Fitted Values (asinh scale)", yaxis_title="Residuals",
     )
     return fig
 
@@ -350,7 +366,7 @@ def _partial_regression(df, target_feat, features, area):
     if not other_feats:
         return no_data(300, "Need ≥2 features")
 
-    y = df["price_dkk_kwh"].values
+    y = df["log_price"].values
     X_target = df[target_feat].values
     X_others = df[other_feats].values
 
@@ -375,7 +391,7 @@ def _partial_regression(df, target_feat, features, area):
     ))
     fig.update_layout(
         **BASE, title=f"{area} Partial Regression: {label}",
-        height=300, xaxis_title=f"{label} | Others", yaxis_title="Price | Others",
+        height=300, xaxis_title=f"{label} | Others", yaxis_title="asinh(Price) | Others",
     )
     return fig
 
@@ -486,9 +502,22 @@ def _build_test_cards(resid, y_pred, ols, df, features, area, freq):
 
     # ── Model summary ───────────────────────────────────────────────────
     if HAS_SM and ols is not None:
-        cards.append(dbc.Col(kpi_card("R²", f"{ols.rsquared:.4f}", f"Adj-R²={ols.rsquared_adj:.4f}", C["muted"]), lg=2, md=3))
+        cards.append(dbc.Col(kpi_card("R²", f"{ols.rsquared:.4f}",
+                     f"Adj-R²={ols.rsquared_adj:.4f}  dep=asinh(price)", C["muted"]), lg=2, md=3))
         cards.append(dbc.Col(kpi_card("F-statistic", f"{ols.fvalue:.2f}", f"p={ols.f_pvalue:.2e}", C["muted"]), lg=2, md=3))
         cards.append(dbc.Col(kpi_card("AIC / BIC", f"{ols.aic:.0f}", f"BIC={ols.bic:.0f}", C["muted"]), lg=2, md=3))
-        cards.append(dbc.Col(kpi_card("Sample", f"n={n}", f"{len(features)} features", C["muted"]), lg=2, md=3))
+        # Check if lags are present
+        has_lags = any("lag" in f for f in features)
+        has_dow = any("dow_" in f for f in features)
+        model_type = "ARX" if has_lags else "OLS"
+        extras = []
+        if has_lags:
+            extras.append("lags")
+        if has_dow:
+            extras.append("weekday FE")
+        model_desc = f"{model_type} + {' + '.join(extras)}" if extras else model_type
+        nw_lags = max(1, int(n ** (1/3)))
+        cards.append(dbc.Col(kpi_card("Model", model_desc,
+                     f"n={n}  {len(features)} vars  NW-HAC({nw_lags})", C["muted"]), lg=2, md=3))
 
     return cards

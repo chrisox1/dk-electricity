@@ -238,6 +238,31 @@ def _prepare_merged_data(pdf, qdf, area, freq, days):
         merged["is_weekend"] = 0
 
     merged = merged[(merged["renewable_mw"] > 0) & (merged["price_dkk_kwh"] > 0)].copy()
+
+    # ── ARX model features ──────────────────────────────────────────────
+    # asinh transform for dependent variable (handles negative prices)
+    merged["log_price"] = np.arcsinh(merged["price_dkk_kwh"])
+
+    # Sort by time for correct lag computation
+    merged = merged.sort_values("ts_utc").reset_index(drop=True)
+
+    # Lag features (autoregressive component)
+    if freq == "daily":
+        merged["price_lag1"] = merged["log_price"].shift(1)
+        merged["price_lag7"] = merged["log_price"].shift(7)
+    else:
+        merged["price_lag1"] = merged["log_price"].shift(1)
+        merged["price_lag7"] = merged["log_price"].shift(24)  # ~1 day in hourly
+
+    # Weekday dummies (Mon=0 … Sun=6 → 6 dummies, Sunday = reference)
+    merged["ts_utc"] = pd.to_datetime(merged["ts_utc"])
+    dow = merged["ts_utc"].dt.dayofweek  # 0=Mon, 6=Sun
+    for d in range(6):  # Mon–Sat, Sun is reference
+        merged[f"dow_{d}"] = (dow == d).astype(int)
+
+    # Drop rows with NaN from lagging
+    merged = merged.dropna(subset=["price_lag1", "price_lag7"]).copy()
+
     return merged if len(merged) >= 10 else None
 
 
@@ -247,6 +272,8 @@ def _prepare_merged_data(pdf, qdf, area, freq, days):
 ALL_BASE_FEATURES = [
     "total_wind", "solar_mw", "gas_price_eur", "consumption_mw",
     "net_imports", "temp_avg_c", "de_price_eur", "no_price_eur", "se_price_eur",
+    "price_lag1", "price_lag7",
+    "dow_0", "dow_1", "dow_2", "dow_3", "dow_4", "dow_5",
 ]
 
 FEATURE_LABELS = {
@@ -261,18 +288,39 @@ FEATURE_LABELS = {
     "se_price_eur": "SE Price",
     "is_peak": "Peak",
     "is_weekend": "Weekend",
+    "price_lag1": "Price Lag-1",
+    "price_lag7": "Price Lag-7",
+    "dow_0": "Mon", "dow_1": "Tue", "dow_2": "Wed",
+    "dow_3": "Thu", "dow_4": "Fri", "dow_5": "Sat",
 }
+
+# Weekday dummy column names (always added/removed as a group)
+DOW_COLS = [f"dow_{d}" for d in range(6)]
 
 
 def _feature_cols(freq: str, selected: list[str] | None = None) -> list[str]:
     if selected:
         features = [f for f in selected if f in ALL_BASE_FEATURES]
+        # If "weekday_dummies" meta-toggle is in selected, expand to all 6
+        if "weekday_dummies" in selected:
+            features = [f for f in features if f != "weekday_dummies"]
+            features += DOW_COLS
     else:
-        features = ["total_wind", "solar_mw", "gas_price_eur",
+        # Default: ARX model with lags + weekday dummies
+        features = ["price_lag1", "price_lag7",
+                     "total_wind", "solar_mw", "gas_price_eur",
                      "consumption_mw", "net_imports", "temp_avg_c"]
+        features += DOW_COLS
     if freq == "hourly":
         features += ["is_peak", "is_weekend"]
-    return features
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for f in features:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+    return unique
 
 
 def _fit_regression(df, freq, selected_features=None):
@@ -281,28 +329,55 @@ def _fit_regression(df, freq, selected_features=None):
     features = [f for f in features if f in df.columns and df[f].notna().sum() > 10 and df[f].std() > 0]
     if not features:
         features = ["total_wind", "solar_mw"]  # fallback minimum
-    X = df[features].values
-    y = df["price_dkk_kwh"].values
+
+    # Standardize continuous features (z-scores) to fix condition number
+    # Binary dummies (dow_*, is_peak, is_weekend) are NOT standardized
+    BINARY_FEATS = set(DOW_COLS) | {"is_peak", "is_weekend"}
+    X_raw = df[features].values.copy()
+    means = np.zeros(len(features))
+    stds = np.ones(len(features))
+    for i, f in enumerate(features):
+        if f not in BINARY_FEATS:
+            m, s = X_raw[:, i].mean(), X_raw[:, i].std()
+            if s > 0:
+                means[i] = m
+                stds[i] = s
+                X_raw[:, i] = (X_raw[:, i] - m) / s
+
+    X = X_raw
+    # Use asinh-transformed price as dependent variable
+    y = df["log_price"].values
 
     if HAS_STATSMODELS:
-        ols = sm.OLS(y, sm.add_constant(X)).fit()
+        X_const = sm.add_constant(X)
+        # Newey-West HAC standard errors (robust to heteroskedasticity + autocorrelation)
+        # maxlags ~ T^(1/3) is standard rule of thumb
+        maxlags = max(1, int(len(y) ** (1 / 3)))
+        ols = sm.OLS(y, X_const).fit(cov_type="HAC", cov_kwds={"maxlags": maxlags})
         stats = {
             "r2": ols.rsquared,
             "adj_r2": ols.rsquared_adj,
-            "f_stat": ols.fvalue,
-            "f_pvalue": ols.f_pvalue,
+            "f_stat": ols.fvalue if hasattr(ols.fvalue, '__float__') else float(ols.fvalue),
+            "f_pvalue": ols.f_pvalue if hasattr(ols.f_pvalue, '__float__') else float(ols.f_pvalue),
             "n": len(y),
+            "aic": ols.aic,
+            "bic": ols.bic,
+            "nw_lags": maxlags,
         }
-        coeffs = ols.params[1:]
+        coeffs = ols.params[1:]  # standardized coefficients
         p_values = ols.pvalues[1:]
     else:
         model = LinearRegression().fit(X, y)
         r2 = model.score(X, y)
-        stats = {"r2": r2, "adj_r2": r2, "f_stat": 0.0, "f_pvalue": 1.0, "n": len(y)}
+        stats = {"r2": r2, "adj_r2": r2, "f_stat": 0.0, "f_pvalue": 1.0,
+                 "n": len(y), "aic": 0, "bic": 0, "nw_lags": 0}
         coeffs = model.coef_
         p_values = np.ones(len(coeffs))
 
     sklearn_model = LinearRegression().fit(X, y)
+    # Store standardization params for scatter chart prediction
+    sklearn_model._feat_means = means
+    sklearn_model._feat_stds = stds
     return sklearn_model, coeffs, p_values, stats, features
 
 
@@ -342,12 +417,12 @@ def _build_scatter_chart(df, model, area, freq, stats, features):
     solar_pct = (df["solar_mw"] / df["renewable_mw"] * 100).fillna(0)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["renewable_mw"], y=df["price_dkk_kwh"], mode="markers",
+        x=df["renewable_mw"], y=df["log_price"], mode="markers",
         marker=dict(size=4, color=solar_pct, colorscale="Viridis",
                     showscale=True, colorbar=dict(title="Solar %", len=0.5, x=1.12), opacity=0.5),
         name="Actual",
         customdata=np.column_stack((df["total_wind"], df["solar_mw"])),
-        hovertemplate="Total: %{x:.0f} MW<br>Wind: %{customdata[0]:.0f} MW<br>Solar: %{customdata[1]:.0f} MW<br>Price: %{y:.3f} DKK/kWh<extra></extra>",
+        hovertemplate="Total: %{x:.0f} MW<br>Wind: %{customdata[0]:.0f} MW<br>Solar: %{customdata[1]:.0f} MW<br>asinh(Price): %{y:.3f}<extra></extra>",
     ))
 
     # Trend line
@@ -364,15 +439,23 @@ def _build_scatter_chart(df, model, area, freq, stats, features):
             row["solar_mw"] = r * avg_solar_ratio
         pred_rows.append([row[f] for f in features])
 
-    y_pred = model.predict(np.array(pred_rows))
+    # Standardize prediction rows using same params as training
+    pred_arr = np.array(pred_rows)
+    if hasattr(model, '_feat_means'):
+        BINARY_FEATS = set(DOW_COLS) | {"is_peak", "is_weekend"}
+        for i, f in enumerate(features):
+            if f not in BINARY_FEATS and model._feat_stds[i] > 0:
+                pred_arr[:, i] = (pred_arr[:, i] - model._feat_means[i]) / model._feat_stds[i]
+    y_pred = model.predict(pred_arr)
     fig.add_trace(go.Scatter(
         x=ren_range, y=y_pred, mode="lines",
         line=dict(color=C["red"], width=2),
         name=f"Model (R²={stats['r2']:.3f})",
     ))
-    fig.update_layout(**BASE, title=f"{area} {len(features)}-Var Model (R²={stats['r2']:.3f}, {freq})",
+    nw_info = f", NW-HAC({stats.get('nw_lags', '?')})" if stats.get("nw_lags") else ""
+    fig.update_layout(**BASE, title=f"{area} ARX {len(features)}-Var (R²={stats['r2']:.3f}, {freq}{nw_info})",
                       height=350, xaxis_title="Total Renewable Generation (MW)",
-                      yaxis_title="Spot Price (DKK/kWh)")
+                      yaxis_title="asinh(Price)")
     return fig
 
 
@@ -508,22 +591,44 @@ def _build_summary_cards(df, stats, coeffs, p_values, freq, area, features=None)
             f"{label} {significance_stars(pv)}", f"{cv:.5f}", f"p={pv:.3f}", clr,
         ), lg=2, md=2)
 
+    nw_lags = stats.get("nw_lags", 0)
     summary = [
         dbc.Col(kpi_card("Next 24h Avg", f"{avg24:.3f}", "DKK/kWh",
                          C["green"] if avg24 < 0.80 else C["red"]), lg=2, md=4),
         dbc.Col(kpi_card("Next 48h Avg", f"{avg48:.3f}", "DKK/kWh",
                          C["green"] if avg48 < 0.90 else C["red"]), lg=2, md=4),
-        dbc.Col(kpi_card("R² / Adj-R²", f"{stats['r2']:.3f} / {stats['adj_r2']:.3f}", "",
+        dbc.Col(kpi_card("R² / Adj-R²", f"{stats['r2']:.3f} / {stats['adj_r2']:.3f}",
+                         "dep var: asinh(price)",
                          C["green"] if stats["r2"] > 0.5 else C["muted"]), lg=2, md=4),
         dbc.Col(kpi_card("F-statistic", f"{stats['f_stat']:.1f}", f"p={stats['f_pvalue']:.3e}",
                          C["green"] if stats["f_pvalue"] < 0.05 else C["red"]), lg=2, md=4),
-        dbc.Col(kpi_card("Sample Size", f"{stats['n']}", "observations", C["muted"]), lg=2, md=4),
+        dbc.Col(kpi_card("Sample", f"n={stats['n']}", f"NW-HAC({nw_lags})" if nw_lags else "",
+                         C["muted"]), lg=2, md=4),
     ]
+    if stats.get("aic"):
+        summary.append(dbc.Col(kpi_card("AIC / BIC",
+            f"{stats['aic']:.0f} / {stats['bic']:.0f}", "", C["muted"]), lg=2, md=4))
 
-    # Add a KPI card for each active feature
-    for feat in features:
+    # Add a KPI card for each active feature (skip weekday dummies — show as group)
+    dow_feats = [f for f in features if f.startswith("dow_")]
+    non_dow = [f for f in features if not f.startswith("dow_")]
+    for feat in non_dow:
         label = FEATURE_LABELS.get(feat, feat)
-        positive_good = feat in ("gas_price_eur", "de_price_eur", "no_price_eur", "se_price_eur")
+        positive_good = feat in ("gas_price_eur", "de_price_eur", "no_price_eur",
+                                  "se_price_eur", "price_lag1", "price_lag7")
         summary.append(_kpi(label, feat, positive_good=positive_good))
+
+    # Weekday dummies as one summary card
+    if dow_feats:
+        dow_info = []
+        for d in dow_feats:
+            if d in c:
+                lbl = FEATURE_LABELS.get(d, d)
+                dow_info.append(f"{lbl}={c[d]:.4f}")
+        any_sig = any(p.get(d, 1) < 0.05 for d in dow_feats)
+        dow_clr = C["green"] if any_sig else C["muted"]
+        summary.append(dbc.Col(kpi_card(
+            "Weekday FE", "6 dummies", "  ".join(dow_info), dow_clr
+        ), lg=4, md=6))
 
     return summary

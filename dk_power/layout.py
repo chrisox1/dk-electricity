@@ -309,6 +309,9 @@ def build_layout() -> dbc.Container:
                                     dbc.Checklist(
                                         id="reg-features",
                                         options=[
+                                            {"label": " Price Lag-1", "value": "price_lag1"},
+                                            {"label": " Price Lag-7", "value": "price_lag7"},
+                                            {"label": " Weekdays", "value": "weekday_dummies"},
                                             {"label": " Wind", "value": "total_wind"},
                                             {"label": " Solar", "value": "solar_mw"},
                                             {"label": " Gas price", "value": "gas_price_eur"},
@@ -319,7 +322,8 @@ def build_layout() -> dbc.Container:
                                             {"label": " 🇳🇴 NO price", "value": "no_price_eur"},
                                             {"label": " 🇸🇪 SE price", "value": "se_price_eur"},
                                         ],
-                                        value=["total_wind", "solar_mw", "gas_price_eur",
+                                        value=["price_lag1", "price_lag7", "weekday_dummies",
+                                               "total_wind", "solar_mw", "gas_price_eur",
                                                "consumption_mw", "net_imports", "temp_avg_c"],
                                         inline=True,
                                         style={"fontSize": "0.8rem", "color": C["text"]},
