@@ -10,7 +10,7 @@ python run.py
 # → http://127.0.0.1:8050
 ```
 
-First launch backfills 10 years of data (~30-90 seconds). Subsequent launches are instant.
+First launch backfills 20 years of data (~60-120 seconds). Subsequent launches are instant.
 
 ## Project Structure
 
