@@ -81,7 +81,7 @@ def build_layout() -> dbc.Container:
                         active_label_style={"color": C["text"]},
                     ),
                     dbc.Tab(
-                        label="Macro Economics",
+                        label="Macro",
                         tab_id="tab-macro",
                         label_style={"color": C["muted"]},
                         active_label_style={"color": C["text"]},
@@ -400,7 +400,7 @@ def build_layout() -> dbc.Container:
                         [
                             dbc.Col(
                                 html.H3(
-                                    "📈 Macro Economics — Electricity & the Danish Economy",
+                                    "Macro — Electricity & the Danish Economy",
                                     style={"fontSize": "1.2rem", "color": C["text"], "fontWeight": 600},
                                 ),
                                 width=12,
