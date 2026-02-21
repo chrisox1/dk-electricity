@@ -87,7 +87,7 @@ def build_layout() -> dbc.Container:
                         active_label_style={"color": C["text"]},
                     ),
                     dbc.Tab(
-                        label="OLS Diagnostics",
+                        label="OLS/ARX Diagnostics",
                         tab_id="tab-diagnostics",
                         label_style={"color": C["muted"]},
                         active_label_style={"color": C["text"]},
@@ -512,7 +512,7 @@ def build_layout() -> dbc.Container:
                         [
                             dbc.Col(
                                 html.H3(
-                                    "🔬 OLS Regression Diagnostics",
+                                    "🔬 OLS/ARX Regression Diagnostics",
                                     style={"fontSize": "1.2rem", "color": C["text"], "fontWeight": 600},
                                 ),
                                 width=8,
